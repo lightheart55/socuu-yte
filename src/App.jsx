@@ -1,6 +1,15 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { RefreshCw, Clipboard, AlertTriangle, Send, Heart, Droplet, Zap, Home, Stethoscope } from 'lucide-react';
 
+/*
+  Single-file React component for the "Công cụ hỗ trợ chẩn đoán và cấp cứu trạm y tế".
+  Notes for use:
+  - Provide your API key via an environment variable named REACT_APP_GLM_API_KEY
+    or replace getApiKey() to return a string directly (not recommended for production).
+  - This component expects Tailwind CSS to be available in the hosting project.
+  - Save as TramYTeApp.jsx and import in your app entry (e.g., index.jsx).
+*/
+
 // --- System Instruction for the main 7-point Plan Generation (Feature 1) ---
 const SYSTEM_INSTRUCTION_PLAN = `
 Bạn là Bác sĩ/Nhân viên y tế tại Trạm Y tế Xã/Phường. Nhiệm vụ của bạn là lập một KẾ HOẠCH SƠ CẤP CỨU NGẮN GỌN và CHÍNH XÁC dựa trên 'lý do đến trạm' của bệnh nhân.
@@ -101,24 +110,21 @@ const fetchWithRetry = async (url, options, maxRetries = 5) => {
             }
         }
     }
-    throw new Error(`API failed after ${maxRetries} retries. Last error: ${lastError.message}`);
+    throw new Error(`API failed after ${maxRetries} retries. Last error: ${lastError?.message}`);
 };
 
 // --- PARSING HELPERS for Plan (Feature 1) ---
 const parsePlan = (planText) => {
     if (!planText) return [];
-    // Split by the pattern \n followed by a number and parenthesis (e.g., \n1) )
     const sections = planText.split(/\n\s*(?=\d+\) )/);
     return sections.filter(s => s.trim() !== '').map((section, index) => {
-        // Use a more robust regex to capture the number, title, and content
         const match = section.match(/^(\d+\) [^\n:]+):?\s*(.*)/s);
         if (match) {
             const [_, title, content] = match;
             return { id: index, title: title.trim(), content: content.trim() };
         }
-        // Handle the main title if it exists
         if (section.startsWith('**KẾ HOẠCH')) {
-            return null; // Skip main title
+            return null;
         }
         return { id: index, title: 'Nội dung', content: section.trim() };
     }).filter(s => s !== null);
@@ -127,7 +133,6 @@ const parsePlan = (planText) => {
 // --- PARSING HELPERS for Home Care (Feature 3) ---
 const parseHomeCare = (homeCareText) => {
     if (!homeCareText) return [];
-    // Use regex to split by the bold titles (e.g., **TITLE**)
     const sections = homeCareText.split(/(\*\*[^**]+\*\*)/).filter(s => s.trim());
     const result = [];
     for (let i = 0; i < sections.length; i += 2) {
@@ -142,20 +147,23 @@ const parseHomeCare = (homeCareText) => {
     return result;
 };
 
+const getApiKey = () => {
+    // Prefer environment variable. For local development create .env with REACT_APP_GLM_API_KEY.
+    return process?.env?.REACT_APP_GLM_API_KEY || window?.__GLM_API_KEY__ || '';
+};
 
 const App = () => {
     const [reason, setReason] = useState('');
     const [plan, setPlan] = useState('');
     const [triageResult, setTriageResult] = useState(null);
     const [homeCareInstructions, setHomeCareInstructions] = useState('');
-    const [differentialResult, setDifferentialResult] = useState(null); 
-    
-    // State variables for loading status (already exist)
+    const [differentialResult, setDifferentialResult] = useState(null);
+
     const [isLoadingPlan, setIsLoadingPlan] = useState(false);
     const [isLoadingTriage, setIsLoadingTriage] = useState(false);
     const [isLoadingHomeCare, setIsLoadingHomeCare] = useState(false);
     const [isLoadingDifferential, setIsLoadingDifferential] = useState(false);
-    
+
     const [error, setError] = useState(null);
 
     const parsedPlan = useMemo(() => parsePlan(plan), [plan]);
@@ -195,10 +203,23 @@ const App = () => {
         }
 
         setLoadState(true);
-        setContent(null); // Clear previous result
 
-        const apiKey = "";
-        const modelName = "gemini-2.5-flash-preview-09-2025";
+        // Clear previous result
+        if (isJson) {
+            if (type === 'triage') setTriageResult(null);
+            if (type === 'differential') setDifferentialResult(null);
+        } else {
+            setContent('');
+        }
+
+        const apiKey = getApiKey();
+        if (!apiKey) {
+            setError('API key chưa được cấu hình. Thiết lập REACT_APP_GLM_API_KEY hoặc window.__GLM_API_KEY__.');
+            setLoadState(false);
+            return;
+        }
+
+        const modelName = 'gemini-2.5-flash-preview-09-2025';
         const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
 
         const userQuery = `Lý do đến trạm: "${reason.trim()}"`;
@@ -207,12 +228,12 @@ const App = () => {
             contents: [{ parts: [{ text: userQuery }] }],
             systemInstruction: {
                 parts: [{ text: systemInstruction }]
-            },
+            }
         };
 
         if (isJson) {
             payload.generationConfig = {
-                responseMimeType: "application/json",
+                responseMimeType: 'application/json',
                 responseSchema: schema
             };
         }
@@ -233,7 +254,7 @@ const App = () => {
                     try {
                         const parsedJson = JSON.parse(jsonText);
                         if (type === 'triage') setTriageResult(parsedJson);
-                        if (type === 'differential') setDifferentialResult(parsedJson); 
+                        if (type === 'differential') setDifferentialResult(parsedJson);
                     } catch (e) {
                         console.error('JSON Parse Error:', e);
                         setError(`Lỗi phân tích kết quả ${type === 'triage' ? 'Triage' : 'Chẩn đoán Phân biệt'}. Vui lòng thử lại.`);
@@ -258,22 +279,19 @@ const App = () => {
     const generatePlan = () => handleAPICall('plan');
     const generateTriage = () => handleAPICall('triage');
     const generateHomeCare = () => handleAPICall('homecare');
-    const generateDifferential = () => handleAPICall('differential'); 
+    const generateDifferential = () => handleAPICall('differential');
 
     const copyToClipboard = (text, name) => {
         if (text) {
             const tempTextArea = document.createElement('textarea');
-            // Use the raw plan text for copy operation
             const textToCopy = (name === "Kế hoạch Sơ cấp cứu") ? plan : 
                                (name === "Hướng dẫn Chăm sóc Tại nhà") ? homeCareInstructions :
                                JSON.stringify(text, null, 2);
-                               
             tempTextArea.value = textToCopy;
             document.body.appendChild(tempTextArea);
             tempTextArea.select();
             document.execCommand('copy');
             document.body.removeChild(tempTextArea);
-
             alert(`Đã sao chép ${name} vào clipboard!`);
         }
     };
@@ -290,14 +308,14 @@ const App = () => {
     };
 
     const getLikelihoodColor = (likelihood) => {
-        const normalized = likelihood.toLowerCase().trim();
+        const normalized = (likelihood || '').toLowerCase().trim();
         if (normalized.includes('rất cao')) return 'bg-red-200 text-red-800 border-red-300';
         if (normalized.includes('cao')) return 'bg-orange-200 text-orange-800 border-orange-300';
         if (normalized.includes('trung bình')) return 'bg-yellow-100 text-yellow-800 border-yellow-300';
         if (normalized.includes('thấp')) return 'bg-green-100 text-green-800 border-green-300';
         return 'bg-gray-100 text-gray-800 border-gray-300';
     };
-    
+
     const isAnyLoading = isLoadingPlan || isLoadingTriage || isLoadingHomeCare || isLoadingDifferential;
 
     return (
@@ -422,7 +440,7 @@ const App = () => {
                     )}
                 </div>
                 
-                {/* Differential Diagnosis Output Area (New Feature 4) - Already JSON, minor styling tweaks */}
+                {/* Differential Diagnosis Output Area (New Feature 4) */}
                 <div className="bg-white p-6 rounded-xl card-shadow border border-purple-100 mb-8">
                     <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center">
                         <Stethoscope className="w-5 h-5 mr-2 text-purple-600" />
@@ -463,7 +481,7 @@ const App = () => {
                     )}
                 </div>
 
-                {/* Triage Output Area (Feature 2) - Already JSON, minor styling tweaks */}
+                {/* Triage Output Area (Feature 2) */}
                 <div className="bg-white p-6 rounded-xl card-shadow border border-sky-100 mb-8">
                     <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center">
                         <Zap className="w-5 h-5 mr-2 text-indigo-600" />
@@ -501,7 +519,7 @@ const App = () => {
                     )}
                 </div>
 
-                {/* Home Care Output Area (Feature 3) - Structured HTML */}
+                {/* Home Care Output Area (Feature 3) */}
                 <div className="bg-white p-6 rounded-xl card-shadow border border-sky-100 mb-8">
                     <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center">
                         <Home className="w-5 h-5 mr-2 text-teal-600" />
@@ -532,7 +550,7 @@ const App = () => {
                     )}
                 </div>
 
-                {/* Plan Output Area (Feature 1) - Structured HTML */}
+                {/* Plan Output Area (Feature 1) */}
                 <div className="bg-white p-6 rounded-xl card-shadow border border-sky-100">
                     <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center">
                         <Clipboard className="w-5 h-5 mr-2 text-gray-600" />
